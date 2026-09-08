@@ -945,6 +945,12 @@ class RuntimeInstaller(private val context: Context) {
             add("${workspace.absolutePath}:$guestWorkspacePath")
             add("-b")
             add("${bridge.absolutePath}:/pocket-bridge")
+
+            val downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            if (downloadDir.exists()) {
+                add("-b")
+                add("${downloadDir.absolutePath}:/root/Downloads")
+            }
             add("-w")
             add(guestWorkspacePath)
             addAll(guestCommand)

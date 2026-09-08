@@ -63,13 +63,14 @@ object RuntimeLaunchConfigBuilder {
             environment["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
             environment["CLAUDE_CODE_DISABLE_TOKEN_COUNTING"] = "1"
             environment["DISABLE_TELEMETRY"] = "1"
-            if (!authToken.isNullOrBlank()) {
-                environment["ANTHROPIC_AUTH_TOKEN"] = authToken
+            if (!authToken.isNullOrBlank() || profile.kind.name == "OMNIROUTE") {
+                val effectiveToken = if (profile.kind.name == "OMNIROUTE") "omniroute" else authToken!!
+                environment["ANTHROPIC_AUTH_TOKEN"] = effectiveToken
                 if (profile.kind == com.jarves.mh.model.ProviderKind.LLM_ROUTER) {
                     environment["ANTHROPIC_API_KEY"] = ""
-                    environment["OPENROUTER_API_KEY"] = authToken
+                    environment["OPENROUTER_API_KEY"] = effectiveToken
                 } else {
-                    environment["ANTHROPIC_API_KEY"] = authToken
+                    environment["ANTHROPIC_API_KEY"] = effectiveToken
                 }
             }
         }
