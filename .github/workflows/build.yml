@@ -33,5 +33,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: mobile-harness-custom-apk
-        path: app/build/outputs/apk/debug/*.apk
-
+        path: app/build/outputs/apk/**/*.apk
+        
