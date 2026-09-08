@@ -149,6 +149,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.platform.LocalConfiguration
+
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -334,6 +345,7 @@ private fun BackgroundTaskSetupScreen(
     var currentStep by rememberSaveable { mutableIntStateOf(0) }
     var notificationGranted by remember { mutableStateOf(notificationsAllowed()) }
     var batteryGranted by remember { mutableStateOf(batteryUnrestricted()) }
+    var storageGranted by remember { mutableStateOf(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) android.os.Environment.isExternalStorageManager() else true) }
     var notificationDenied by rememberSaveable { mutableStateOf(false) }
     var taskProtectionConfirmed by rememberSaveable { mutableStateOf(false) }
 
@@ -350,6 +362,14 @@ private fun BackgroundTaskSetupScreen(
         batteryGranted = batteryUnrestricted()
         if (batteryGranted) currentStep = 2
     }
+    val storageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        storageGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.os.Environment.isExternalStorageManager()
+        } else {
+            true
+        }
+        if (storageGranted) currentStep = 3
+    }
 
     LaunchedEffect(Unit) {
         notificationGranted = notificationsAllowed()
@@ -359,21 +379,25 @@ private fun BackgroundTaskSetupScreen(
     val currentIcon = when (currentStep) {
         0 -> Icons.Default.Notifications
         1 -> Icons.Default.BatterySaver
+        2 -> Icons.Default.Folder
         else -> Icons.Default.Shield
     }
     val currentTitle = when (currentStep) {
         0 -> "Task notifications"
         1 -> "Background reliability"
+        2 -> "Storage access"
         else -> "Task protection"
     }
     val currentDescription = when (currentStep) {
         0 -> "See live progress and receive an alert when Claude finishes or needs your attention."
         1 -> "Allow Mobile Harness to continue a task when you lock the phone or switch to another app."
+        2 -> "The coding environment needs access to manage external storage to read and write your project files."
         else -> "Keep the CPU awake only while a visible coding task is running, then release it automatically."
     }
     val currentPrivacyNote = when (currentStep) {
         0 -> "Only task progress, completion, and error notifications are sent."
         1 -> "You remain in control and can stop every task from its notification."
+        2 -> "This permission is necessary for the AI to interact with files in your device storage."
         else -> "The screen stays off. Protection is capped at 90 minutes and stops with the task."
     }
     val currentGranted = when (currentStep) {
@@ -1793,6 +1817,7 @@ private fun ProviderChoiceRow(
         ProviderKind.LLM_ROUTER -> Color(0xFF5B8DEF)
         ProviderKind.DEEPSEEK -> Color(0xFF4D6BFE)
         ProviderKind.KIMI -> Color(0xFF8B7CF6)
+        ProviderKind.OMNIROUTE -> Color(0xFF6B4AFA)
         ProviderKind.CUSTOM -> PocketOrange
     }
     val mark = when (provider) {
@@ -1801,6 +1826,7 @@ private fun ProviderChoiceRow(
         ProviderKind.LLM_ROUTER -> "OR"
         ProviderKind.DEEPSEEK -> "DS"
         ProviderKind.KIMI -> "K"
+        ProviderKind.OMNIROUTE -> "OR"
         ProviderKind.CUSTOM -> "<>"
     }
 
@@ -2609,6 +2635,10 @@ private fun WorkspaceScreen(
     }
 
     var selectedTab by rememberSaveable { mutableStateOf(WorkspaceTab.CHAT) }
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    val configuration = LocalConfiguration.current
+    val isExpanded = configuration.screenWidthDp > 600
     var showChats by rememberSaveable { mutableStateOf(false) }
     val activeChat = state.projectChats.firstOrNull { it.id == state.activeChatId }
 
@@ -2725,7 +2755,7 @@ private fun WorkspaceScreen(
             )
         },
         bottomBar = {
-            if (!keyboardVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+            if (!keyboardVisible && !isExpanded) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 WorkspaceTab.entries.filter { it != WorkspaceTab.CHANGES }.forEach { tab ->
                     NavigationBarItem(
                         selected = selectedTab == tab,
@@ -2746,72 +2776,168 @@ private fun WorkspaceScreen(
             }
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-            when (selectedTab) {
-                WorkspaceTab.CHAT -> ChatTab(
-                    state.messages,
-                    state.pendingApproval,
-                    state.liveProcess,
-                    state.isRunning,
-                    onSend,
-                    onStop,
-                    onApproval,
-                    listState = chatListState,
-                    taskStartedAtMillis = state.workSegmentStartedAtMillis ?: state.taskStartedAtMillis,
-                    taskFinishedAtMillis = state.taskFinishedAtMillis,
-                    thinkingActive = state.liveThinking,
-                    pendingAttachments = state.pendingAttachments,
-                    onAttach = {
-                        attachmentLauncher.launch(arrayOf("image/*", "text/*", "application/json", "application/xml"))
-                    },
-                    onRemoveAttachment = onRemoveAttachment,
-                    onOpenAttachment = onOpenAttachment,
-                    onRunInTerminal = { command ->
+        Box(Modifier.fillMaxSize().padding(padding).focusRequester(focusRequester).focusable().onKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown && event.isCtrlPressed) {
+                if (event.key == Key.Grave) {
+                    if (selectedTab != WorkspaceTab.TERMINAL) {
                         selectedTab = WorkspaceTab.TERMINAL
                         onTerminalOpened()
-                        onTerminalPrepare(command)
-                    },
-                )
-                WorkspaceTab.FILES -> FilesTab(
-                    files = state.workspaceFiles,
-                    loading = state.filesLoading,
-                    suggestedProjectRoot = state.suggestedProjectRoot,
-                    onRefresh = onRefreshFiles,
-                    onOpenFile = onOpenFile,
-                    onUseSuggestedProjectRoot = onUseSuggestedProjectRoot,
-                    onExport = {
-                        exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
-                    },
-                )
-                WorkspaceTab.TERMINAL -> TerminalScreen(
-                    lines = state.projectTerminalLines,
-                    isRunning = state.projectTerminalRunning,
-                    onRun = onTerminalRun,
-                    onInput = onTerminalInput,
-                    onInterrupt = onTerminalInterrupt,
-                    onClear = onTerminalClear,
-                    onToggleTheme = {},
-                    themeMode = state.themeMode,
-                    title = "Project Terminal",
-                    subtitle = "${state.projectTerminalCwd} · Ubuntu PRoot",
-                    liveOutput = state.projectTerminalLiveOutput,
-                    currentCommand = state.projectTerminalCommand,
-                    commandDraft = state.projectTerminalDraft,
-                    onCommandDraftConsumed = onTerminalDraftConsumed,
-                    promptPath = state.projectTerminalCwd,
-                    onStop = onTerminalStop,
-                    showThemeAction = false,
-                    showQuickCommands = false,
-                    compactHeader = true,
-                )
-                WorkspaceTab.CHANGES -> ChangesTab(
-                    state.changes,
-                    onUndoChanges,
-                    onKeepChanges,
-                    onUndoFileChange,
-                    onKeepFileChange,
-                )
-                WorkspaceTab.PREVIEW -> PreviewTab(state.previewReady, state.previewUrl)
+                    } else {
+                        selectedTab = WorkspaceTab.CHAT
+                    }
+                    true
+                } else if (event.key == Key.Enter && selectedTab == WorkspaceTab.CHAT) {
+                    false
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }) {
+            if (isExpanded) {
+                Row(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(1f)) {
+                        when (selectedTab) {
+                            WorkspaceTab.FILES -> FilesTab(
+                                files = state.workspaceFiles,
+                                loading = state.filesLoading,
+                                suggestedProjectRoot = state.suggestedProjectRoot,
+                                onRefresh = onRefreshFiles,
+                                onOpenFile = onOpenFile,
+                                onUseSuggestedProjectRoot = onUseSuggestedProjectRoot,
+                                onExport = {
+                                    exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
+                                },
+                            )
+                            WorkspaceTab.CHANGES -> ChangesTab(
+                                state.changes,
+                                onUndoChanges,
+                                onKeepChanges,
+                                onUndoFileChange,
+                                onKeepFileChange,
+                            )
+                            else -> ChatTab(
+                                state.messages,
+                                state.pendingApproval,
+                                state.liveProcess,
+                                state.isRunning,
+                                onSend,
+                                onStop,
+                                onApproval,
+                                listState = chatListState,
+                                taskStartedAtMillis = state.workSegmentStartedAtMillis ?: state.taskStartedAtMillis,
+                                taskFinishedAtMillis = state.taskFinishedAtMillis,
+                                thinkingActive = state.liveThinking,
+                                pendingAttachments = state.pendingAttachments,
+                                onAttach = {
+                                    attachmentLauncher.launch(arrayOf("image/*", "text/*", "application/json", "application/xml"))
+                                },
+                                onRemoveAttachment = onRemoveAttachment,
+                                onOpenAttachment = onOpenAttachment,
+                                onRunInTerminal = { command ->
+                                    selectedTab = WorkspaceTab.TERMINAL
+                                    onTerminalOpened()
+                                    onTerminalPrepare(command)
+                                },
+                            )
+                        }
+                    }
+                    Box(Modifier.weight(1f)) {
+                        if (selectedTab == WorkspaceTab.PREVIEW) {
+                            PreviewTab(state.previewReady, state.previewUrl)
+                        } else {
+                            TerminalScreen(
+                                lines = state.projectTerminalLines,
+                                isRunning = state.projectTerminalRunning,
+                                onRun = onTerminalRun,
+                                onInput = onTerminalInput,
+                                onInterrupt = onTerminalInterrupt,
+                                onClear = onTerminalClear,
+                                onToggleTheme = {},
+                                themeMode = state.themeMode,
+                                title = "Project Terminal",
+                                subtitle = "${state.projectTerminalCwd} · Ubuntu PRoot",
+                                liveOutput = state.projectTerminalLiveOutput,
+                                currentCommand = state.projectTerminalCommand,
+                                commandDraft = state.projectTerminalDraft,
+                                onCommandDraftConsumed = onTerminalDraftConsumed,
+                                promptPath = state.projectTerminalCwd,
+                                onStop = onTerminalStop,
+                                showThemeAction = false,
+                                showQuickCommands = false,
+                                compactHeader = true,
+                            )
+                        }
+                    }
+                }
+            } else {
+                when (selectedTab) {
+                    WorkspaceTab.CHAT -> ChatTab(
+                        state.messages,
+                        state.pendingApproval,
+                        state.liveProcess,
+                        state.isRunning,
+                        onSend,
+                        onStop,
+                        onApproval,
+                        listState = chatListState,
+                        taskStartedAtMillis = state.workSegmentStartedAtMillis ?: state.taskStartedAtMillis,
+                        taskFinishedAtMillis = state.taskFinishedAtMillis,
+                        thinkingActive = state.liveThinking,
+                        pendingAttachments = state.pendingAttachments,
+                        onAttach = {
+                            attachmentLauncher.launch(arrayOf("image/*", "text/*", "application/json", "application/xml"))
+                        },
+                        onRemoveAttachment = onRemoveAttachment,
+                        onOpenAttachment = onOpenAttachment,
+                        onRunInTerminal = { command ->
+                            selectedTab = WorkspaceTab.TERMINAL
+                            onTerminalOpened()
+                            onTerminalPrepare(command)
+                        },
+                    )
+                    WorkspaceTab.FILES -> FilesTab(
+                        files = state.workspaceFiles,
+                        loading = state.filesLoading,
+                        suggestedProjectRoot = state.suggestedProjectRoot,
+                        onRefresh = onRefreshFiles,
+                        onOpenFile = onOpenFile,
+                        onUseSuggestedProjectRoot = onUseSuggestedProjectRoot,
+                        onExport = {
+                            exportProjectLauncher.launch("${state.activeProject?.slug ?: "project"}.zip")
+                        },
+                    )
+                    WorkspaceTab.TERMINAL -> TerminalScreen(
+                        lines = state.projectTerminalLines,
+                        isRunning = state.projectTerminalRunning,
+                        onRun = onTerminalRun,
+                        onInput = onTerminalInput,
+                        onInterrupt = onTerminalInterrupt,
+                        onClear = onTerminalClear,
+                        onToggleTheme = {},
+                        themeMode = state.themeMode,
+                        title = "Project Terminal",
+                        subtitle = "${state.projectTerminalCwd} · Ubuntu PRoot",
+                        liveOutput = state.projectTerminalLiveOutput,
+                        currentCommand = state.projectTerminalCommand,
+                        commandDraft = state.projectTerminalDraft,
+                        onCommandDraftConsumed = onTerminalDraftConsumed,
+                        promptPath = state.projectTerminalCwd,
+                        onStop = onTerminalStop,
+                        showThemeAction = false,
+                        showQuickCommands = false,
+                        compactHeader = true,
+                    )
+                    WorkspaceTab.CHANGES -> ChangesTab(
+                        state.changes,
+                        onUndoChanges,
+                        onKeepChanges,
+                        onUndoFileChange,
+                        onKeepFileChange,
+                    )
+                    WorkspaceTab.PREVIEW -> PreviewTab(state.previewReady, state.previewUrl)
+                }
             }
         }
     }
